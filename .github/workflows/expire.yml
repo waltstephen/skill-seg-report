@@ -1,0 +1,45 @@
+# Takes the report offline after EXPIRES_AT: the branch is force-pushed to a single orphan commit that
+# holds only an "expired" page (plus this workflow, unchanged), so the old pages and videos leave the history.
+name: expire-site
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only report what would happen"
+        default: "true"
+      now:
+        description: "Override current time (ISO 8601) for testing"
+        default: ""
+permissions:
+  contents: write
+env:
+  EXPIRES_AT: "2026-11-19T09:19:00Z"
+jobs:
+  expire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide
+        id: d
+        run: |
+          now="${{ github.event.inputs.now }}"; [ -z "$now" ] && now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          if [ "$(date -u -d "$now" +%s)" -lt "$(date -u -d "$EXPIRES_AT" +%s)" ]; then echo "not expired yet ($now < $EXPIRES_AT)"; echo "go=false" >> $GITHUB_OUTPUT; exit 0; fi
+          if grep -q 'data-expired="1"' index.html 2>/dev/null; then echo "already expired"; echo "go=false" >> $GITHUB_OUTPUT; exit 0; fi
+          echo "expired at $EXPIRES_AT (now $now)"; echo "go=true" >> $GITHUB_OUTPUT
+      - name: Replace site with an expiry notice
+        if: steps.d.outputs.go == 'true'
+        run: |
+          mkdir /tmp/stub && cp -r .github /tmp/stub/
+          cat > /tmp/stub/index.html <<'HTML'
+          <!doctype html><html lang="en" data-expired="1"><meta charset="utf-8"><title>Expired</title>
+          <body style="font:16px sans-serif;max-width:640px;margin:15vh auto;color:#444">
+          <h2>This page has expired</h2><p>The skill-segmentation demo was available for 30 days and has been taken down.</p>
+          <p>该演示页面已过期（有效期 30 天）。</p></body></html>
+          HTML
+          cp /tmp/stub/index.html /tmp/stub/en.html
+          cd /tmp/stub && git init -q -b main && git add -A
+          git -c user.name=expire-bot -c user.email=actions@users.noreply.github.com commit -qm "Site expired"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then echo "dry run: would force-push"; git show --stat HEAD | head; exit 0; fi
+          git push --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" main
